@@ -1,0 +1,16 @@
+# Secrets (Never commit these!)
+.env
+
+# Python junk
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Data files (Don't commit these)
+categories.csv
+files.index.xml
+files.index.xml.gz
+*.jsonl
+*.xml
+*.gz
