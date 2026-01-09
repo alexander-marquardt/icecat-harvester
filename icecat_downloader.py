@@ -20,19 +20,22 @@ FILES_INDEX_URL = "https://data.icecat.biz/export/freexml/EN/files.index.xml.gz"
 CATEGORIES_CSV = "categories.csv"
 FILES_INDEX_XML = "files.index.xml.gz"
 OUTPUT_DIR = "products"
+XML_SAVE_DIR = os.path.join(OUTPUT_DIR, "xml_source") # <--- New folder for XMLs
 
 # Set to 0 to download EVERYTHING
 LIMIT_PER_CATEGORY = 0  
 
 # --- CATEGORIES TO DOWNLOAD ---
 TARGET_CATEGORIES = [
-    "Overshoes & Overboots", 
-    "Men's Shoes",
-    "Women's Shoes",
-    "Shoes",
-    "Racket Sports Shoes",
-    "Athletic Shoes",
-    "Cycling Shoes",
+    "Laptops", 
+    "Laptop Spare Parts",
+    "PCs/Workstations",
+    
+    "Mobile Phone Cases",
+    "Mobile Phones",
+
+    "TVs",
+    "TV Mounts & Stands"
 ]
 
 def get_auth():
@@ -51,33 +54,39 @@ def ensure_categories_csv():
                 writer = csv.writer(csvfile)
                 writer.writerow(['ID', 'Name'])
                 
-                context = ET.iterparse(f, events=('end',))
+                context = ET.iterparse(f, events=('start', 'end')) # Use start/end for better control
                 count = 0
-                for _, elem in context:
-                    if elem.tag.endswith('Category'):
-                        cat_id = elem.get('ID')
-                        name = "Unknown"
-                        for child in elem:
-                            if child.tag.endswith('Name') and child.get('ID') == '1':
-                                name = child.get('Value')
-                                break
-                        if cat_id and name != "Unknown":
-                            writer.writerow([cat_id, name])
-                            count += 1
-                        elem.clear()
+                for event, elem in context:
+                    if event == 'end':
+                        if elem.tag == 'Category' or elem.tag.endswith('}Category'):
+                            cat_id = elem.get('ID')
+                            name = "Unknown"
+                            for child in elem:
+                                if child.tag.endswith('Name') and child.get('ID') == '1':
+                                    name = child.get('Value')
+                                    break
+                            # Fallback
+                            if name == "Unknown": name = elem.get('Name')
+
+                            if cat_id and name and name != "Unknown":
+                                writer.writerow([cat_id, name])
+                                count += 1
+                            elem.clear()
+                        elif 'VirtualCategory' in elem.tag:
+                            elem.clear()
+
         except Exception as e:
             print(f"Error processing categories XML: {e}")
 
 def download_files_index():
-    # 1. CHECK IF FILE IS CORRUPT/SMALL
     if os.path.exists(FILES_INDEX_XML):
         size_mb = os.path.getsize(FILES_INDEX_XML) / (1024 * 1024)
-        if size_mb < 5: # If less than 5MB, it's definitely broken (Index is usually ~50MB+)
-            print(f"Warning: Index file is too small ({size_mb:.2f} MB). Deleting to force redownload...")
+        if size_mb < 5: 
+            print(f"Warning: Index file is too small ({size_mb:.2f} MB). Deleting...")
             os.remove(FILES_INDEX_XML)
     
     if not os.path.exists(FILES_INDEX_XML):
-        print(f"Downloading {FILES_INDEX_XML} (Please wait, approx 50-100MB)...")
+        print(f"Downloading {FILES_INDEX_XML} (Please wait)...")
         try:
             response = requests.get(FILES_INDEX_URL, auth=get_auth(), stream=True)
             if response.status_code != 200:
@@ -109,10 +118,8 @@ def get_target_category_ids(cat_map):
     return list(set(target_ids))
 
 def load_existing_product_ids():
-    """Scans existing .ndjson files to avoid re-downloading."""
     existing = set()
-    if not os.path.exists(OUTPUT_DIR):
-        return existing
+    if not os.path.exists(OUTPUT_DIR): return existing
         
     print("Scanning existing files to resume downloads...")
     for filename in os.listdir(OUTPUT_DIR):
@@ -124,12 +131,12 @@ def load_existing_product_ids():
                         if line.strip():
                             data = json.loads(line)
                             existing.add(data.get("id"))
-            except:
-                pass # Ignore corrupt lines
+            except: pass
     print(f"Found {len(existing)} products already downloaded. Skipping them.")
     return existing
 
 def parse_xml_to_json(xml_content, cat_id, cat_name):
+    # (Parsing logic remains identical)
     try:
         root = ET.fromstring(xml_content)
         product = root.find("Product")
@@ -182,18 +189,33 @@ def parse_xml_to_json(xml_content, cat_id, cat_name):
                     name = f"Feature_{feature.get('CategoryFeature_ID')}"
                 if name and value:
                     item["specs"][name] = value
-            except:
-                continue
+            except: continue
         return item
-    except:
-        return None
+    except: return None
 
+# --- MODIFIED FUNCTION ---
 def fetch_product_data(product_path, cat_id, cat_name):
+    """Downloads XML, saves it to disk, AND parses it to JSON."""
     product_url = f"https://data.icecat.biz/{product_path}"
+    
     try:
         response = requests.get(product_url, auth=get_auth(), timeout=10)
         if response.status_code == 200:
+            # 1. SAVE THE RAW XML
+            # Determine save path: products/xml_source/CategoryName/12345.xml
+            safe_cat_name = cat_name.replace(" ", "_").replace("/", "-").replace("&", "and")
+            xml_cat_dir = os.path.join(XML_SAVE_DIR, safe_cat_name)
+            os.makedirs(xml_cat_dir, exist_ok=True)
+            
+            filename = os.path.basename(product_path) # e.g. 12345.xml
+            xml_file_path = os.path.join(xml_cat_dir, filename)
+            
+            with open(xml_file_path, 'wb') as f:
+                f.write(response.content)
+
+            # 2. PARSE TO JSON (as before)
             return parse_xml_to_json(response.content, cat_id, cat_name)
+            
     except Exception as e:
         print(f"Error downloading {product_url}: {e}")
     return None
@@ -204,19 +226,23 @@ def main():
         return
 
     ensure_categories_csv()
-    download_files_index() # Will auto-delete if corrupt
+    download_files_index()
 
     cat_map = load_category_map()
     target_ids = get_target_category_ids(cat_map)
-    existing_ids = load_existing_product_ids() # Load Resume Data
+    existing_ids = load_existing_product_ids() 
     
     if not target_ids:
         print("No target categories found.")
         return
 
+    # Ensure main output and XML dirs exist
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    print(f"Starting downloads (Limit per category: {'Unlimited' if LIMIT_PER_CATEGORY == 0 else LIMIT_PER_CATEGORY})...")
+    os.makedirs(XML_SAVE_DIR, exist_ok=True)
     
+    print(f"Starting downloads (Limit per category: {'Unlimited' if LIMIT_PER_CATEGORY == 0 else LIMIT_PER_CATEGORY})...")
+    print(f"XML files will be saved to: {XML_SAVE_DIR}")
+
     cat_counts = {cid: 0 for cid in target_ids}
     total_saved = 0
     total_skipped = 0
@@ -230,24 +256,20 @@ def main():
                     cid = elem.get('Catid')
                     
                     if cid in target_ids:
-                        product_id = elem.get('Product_ID') # Icecat Index usually has this
+                        product_id = elem.get('Product_ID')
                         if not product_id: 
-                            # Fallback if ID is not in attribute (older index versions)
                             path = elem.get('path')
                             if path: product_id = path.split('/')[-1].replace('.xml', '')
 
-                        # 1. SKIP IF ALREADY DOWNLOADED
                         if product_id in existing_ids:
                             total_skipped += 1
                             elem.clear()
                             continue
 
-                        # 2. CHECK LIMIT
                         if LIMIT_PER_CATEGORY > 0 and cat_counts[cid] >= LIMIT_PER_CATEGORY:
                             elem.clear()
                             continue
                             
-                        # 3. DOWNLOAD
                         product_path = elem.get('path')
                         if product_path:
                             raw_cat_name = cat_map.get(cid, "Unknown")
@@ -260,7 +282,6 @@ def main():
                                 with open(file_path, 'a', encoding='utf-8') as outfile:
                                     outfile.write(json.dumps(product_data) + "\n")
                                 
-                                # Update Resume List so we don't dup if script crashes and restarts
                                 existing_ids.add(product_data['id'])
                                 cat_counts[cid] += 1
                                 total_saved += 1
@@ -272,9 +293,8 @@ def main():
                     
     except Exception as e:
         print(f"CRITICAL ERROR reading index: {e}")
-        print("Try deleting files.index.xml.gz manually and running again.")
         
-    print(f"\nDone! Saved {total_saved} new products. Skipped {total_skipped} existing.")
+    print(f"\nDone! Saved {total_saved} new products (XML+JSON). Skipped {total_skipped} existing.")
 
 if __name__ == "__main__":
     main()

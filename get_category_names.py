@@ -2,20 +2,15 @@ import requests
 import gzip
 import xml.etree.ElementTree as ET
 from requests.auth import HTTPBasicAuth
+import csv
 import os
-import csv 
 from dotenv import load_dotenv
 
-# Run with: uv run --with requests --with dotenv ./get_category_names.py    
-
-# Load variables from .env file
 load_dotenv()
 
 # --- CONFIGURATION ---
-# Now we read from the environment, with a fallback for safety
 ICECAT_USER = os.getenv('ICECAT_USER')
 ICECAT_PASS = os.getenv('ICECAT_PASS')
-
 CATS_URL = "https://data.icecat.biz/export/freexml/refs/CategoriesList.xml.gz"
 OUTPUT_FILE = "categories.csv"
 
@@ -35,30 +30,41 @@ def fetch_and_save_categories():
             writer = csv.writer(csvfile)
             writer.writerow(['ID', 'Name']) # Header
             
-            context = ET.iterparse(f, events=('end',))
+            context = ET.iterparse(f, events=('start', 'end'))
             count = 0
             
             for event, elem in context:
-                if elem.tag.endswith('Category'):
-                    cat_id = elem.get('ID')
-                    name = "Unknown"
-                    
-                    # Find English Name (ID='1')
-                    for child in elem:
-                        if child.tag.endswith('Name'):
-                            if child.get('ID') == '1':
-                                name = child.get('Value')
-                                break
-                            if name == "Unknown":
-                                name = child.get('Value')
+                if event == 'end':
+                    # CRITICAL FIX: Explicitly check tag name is EXACTLY 'Category'
+                    # (This ignores 'VirtualCategory', 'CloudCategory', etc.)
+                    if elem.tag == 'Category' or elem.tag.endswith('}Category'):
+                        cat_id = elem.get('ID')
+                        name = "Unknown"
+                        
+                        # Find English Name
+                        for child in elem:
+                            if child.tag.endswith('Name'):
+                                if child.get('ID') == '1': # English
+                                    name = child.get('Value')
+                                    break
+                                if name == "Unknown":
+                                    name = child.get('Value')
 
-                    if cat_id and name and name != "Unknown":
-                        writer.writerow([cat_id, name])
-                        count += 1
+                        # Fallback for older XML attributes
+                        if name == "Unknown":
+                            name = elem.get('Name')
+
+                        if cat_id and name and name != "Unknown":
+                            writer.writerow([cat_id, name])
+                            count += 1
+                        
+                        elem.clear()
                     
-                    elem.clear()
+                    # Explicitly clear VirtualCategory to free memory
+                    elif 'VirtualCategory' in elem.tag:
+                        elem.clear()
             
-            print(f"Success! Saved {count} categories to {OUTPUT_FILE}")
+            print(f"Success! Saved {count} REAL categories to {OUTPUT_FILE}")
 
     except Exception as e:
         print(f"Error processing XML: {e}")
