@@ -4,15 +4,22 @@ from collections import Counter
 import csv
 import os
 
+# --- PATH CONFIGURATION ---
+# Calculate paths relative to this script file
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+
 # Files
-INDEX_FILE = "files.index.xml.gz"
-MAP_FILE = "categories.csv"
-OUTPUT_FILE = "category_counts.csv"  
+INDEX_FILE = os.path.join(DATA_DIR, "files.index.xml.gz")
+MAP_FILE = os.path.join(DATA_DIR, "categories.csv")
+OUTPUT_FILE = os.path.join(DATA_DIR, "category_counts.csv")
 
 def load_category_map():
     cat_map = {}
     if not os.path.exists(MAP_FILE):
         print(f"Warning: {MAP_FILE} not found. Names will be unknown.")
+        print("Run 'uv run src/get_category_names.py' first.")
         return cat_map
         
     with open(MAP_FILE, mode='r', encoding='utf-8') as f:
@@ -38,7 +45,8 @@ def scan_categories():
                         counts[cat_id] += 1
                     elem.clear()
     except FileNotFoundError:
-        print(f"Error: {INDEX_FILE} missing. Run the harvester first to download the index.")
+        print(f"Error: {INDEX_FILE} missing.")
+        print("Run 'uv run src/downloader.py' at least once to download the index.")
         return
 
     # 2. Write ALL counts to CSV
