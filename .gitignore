@@ -1,16 +1,16 @@
-# Secrets (Never commit these!)
-.env
-
-# Python junk
+# Python Artifacts
 __pycache__/
 *.pyc
 venv/
 .venv/
 
-# Data files (Don't commit these)
-categories.csv
-files.index.xml
-files.index.xml.gz
-*.jsonl
-*.xml
+# Secrets
+.env
+
+# Data (Keep repo light!)
+data/
+products/
 *.gz
+*.csv
+*.xml
+*.ndjson

@@ -6,18 +6,28 @@ import csv
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+# Calculate paths relative to this script file
+# (This allows running from root OR from inside src/)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+OUTPUT_FILE = os.path.join(DATA_DIR, "categories.csv")
+
+# Load .env from project root
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
 # --- CONFIGURATION ---
 ICECAT_USER = os.getenv('ICECAT_USER')
 ICECAT_PASS = os.getenv('ICECAT_PASS')
 CATS_URL = "https://data.icecat.biz/export/freexml/refs/CategoriesList.xml.gz"
-OUTPUT_FILE = "categories.csv"
 
 def get_auth():
     return HTTPBasicAuth(ICECAT_USER, ICECAT_PASS)
 
 def fetch_and_save_categories():
+    # Ensure data directory exists
+    os.makedirs(DATA_DIR, exist_ok=True)
+    
     print(f"Downloading Categories List to {OUTPUT_FILE}...")
     
     try:
