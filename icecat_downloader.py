@@ -16,15 +16,15 @@ ICECAT_PASS = os.getenv('ICECAT_PASS')
 
 CATS_URL = "https://data.icecat.biz/export/freexml/refs/CategoriesList.xml.gz"
 FILES_INDEX_URL = "https://data.icecat.biz/export/freexml/EN/files.index.xml.gz"
+
 CATEGORIES_CSV = "categories.csv"
 FILES_INDEX_XML = "files.index.xml.gz"
-OUTPUT_DIR = "products"
+OUTPUT_DIR = "products"  # Folder where category files will go
 
-# Limit downloads per category for testing (Set to 0 for unlimited)
-LIMIT_PER_CATEGORY = 20 
+# Limit downloads per category (Set to 0 for unlimited)
+LIMIT_PER_CATEGORY = 1 
 
 # --- CATEGORIES TO DOWNLOAD ---
-# (I kept your Shoe list, but this works for Electronics too if you change strings)
 TARGET_CATEGORIES = [
     "Overshoes & Overboots", 
     "Men's Shoes",
@@ -36,16 +36,13 @@ TARGET_CATEGORIES = [
 ]
 
 def get_auth():
-    """Returns the HTTPBasicAuth for Icecat."""
     return HTTPBasicAuth(ICECAT_USER, ICECAT_PASS)
 
 def ensure_categories_csv():
-    """Ensures that the categories.csv file exists."""
     if not os.path.exists(CATEGORIES_CSV):
         download_categories_list()
 
 def download_categories_list():
-    """Downloads and parses the CategoriesList.xml.gz to create categories.csv."""
     print(f"Downloading Categories List to {CATEGORIES_CSV}...")
     try:
         response = requests.get(CATS_URL, auth=get_auth(), stream=True)
@@ -77,7 +74,6 @@ def download_categories_list():
         print(f"Error processing categories XML: {e}")
 
 def download_files_index():
-    """Downloads the files.index.xml.gz file."""
     if not os.path.exists(FILES_INDEX_XML):
         print(f"Downloading {FILES_INDEX_XML} (this is large)...")
         try:
@@ -94,7 +90,6 @@ def download_files_index():
             print(f"Error downloading index: {e}")
 
 def load_category_map():
-    """Loads the category map from categories.csv."""
     cat_map = {}
     ensure_categories_csv()
     with open(CATEGORIES_CSV, mode='r', encoding='utf-8') as f:
@@ -104,15 +99,11 @@ def load_category_map():
     return cat_map
 
 def get_target_category_ids(cat_map):
-    """Gets the category IDs for the target categories."""
     target_ids = []
     print(f"Searching for categories matching: {TARGET_CATEGORIES}")
     for cat_id, name in cat_map.items():
-        # Check explicit list
         for target in TARGET_CATEGORIES:
-            if target.lower() == name.lower(): # Exact match preferred
-                target_ids.append(cat_id)
-            elif target.lower() in name.lower(): # Partial match
+            if target.lower() in name.lower():
                 target_ids.append(cat_id)
                 
     unique_ids = list(set(target_ids))
@@ -120,15 +111,11 @@ def get_target_category_ids(cat_map):
     return unique_ids
 
 def parse_xml_to_json(xml_content, cat_id, cat_name):
-    """
-    Parses raw Icecat XML bytes into a clean JSON dictionary.
-    """
     try:
         root = ET.fromstring(xml_content)
         product = root.find("Product")
         if product is None: return None
 
-        # 1. Basic Info
         item = {
             "id": product.get("ID"),
             "title": product.get("Name") or product.get("Title"),
@@ -141,47 +128,36 @@ def parse_xml_to_json(xml_content, cat_id, cat_name):
             "specs": {}
         }
 
-        # 2. Description
+        # Description
         desc_node = product.find(".//ProductDescription")
         if desc_node is not None:
             item["description"] = desc_node.get("LongDesc")
 
-        # 3. Images (Consolidate HighPic and Gallery)
+        # Images
         image_list = []
-        
-        # A. Main High Res Image (Attribute on Product tag)
         main_pic = product.get("HighPic")
-        if main_pic:
-            image_list.append(main_pic)
+        if main_pic: image_list.append(main_pic)
             
-        # B. Gallery Images
         for pic in product.findall(".//ProductGallery/ProductPicture"):
             url = pic.get("Pic")
-            if url:
-                image_list.append(url)
+            if url: image_list.append(url)
         
-        # Clean up images (HTTPS + Unique)
+        # Clean Images (HTTPS + Unique)
         clean_images = []
         for img in image_list:
             if img:
-                # FIX: Force HTTPS to avoid mixed content warnings in demo
                 secure_url = img.replace("http://", "https://")
                 if secure_url not in clean_images:
                     clean_images.append(secure_url)
         
         item["images"] = clean_images
         if clean_images:
-            item["image_url"] = clean_images[0] # Convenience field for main image
+            item["image_url"] = clean_images[0]
 
-        # 4. Specs / Features
-        # Icecat structure: ProductFeature -> LocalFeature -> Feature -> Name
+        # Specs
         for feature in product.findall(".//ProductFeature"):
             try:
-                # The value (e.g., "Red", "100")
                 value = feature.get("Presentation_Value")
-                
-                # The label (e.g., "Color", "Weight")
-                # We need to dig into LocalFeature to find the English name
                 name = None
                 local_feat = feature.find(".//LocalFeature")
                 if local_feat is not None:
@@ -189,7 +165,6 @@ def parse_xml_to_json(xml_content, cat_id, cat_name):
                     if feat_node is not None:
                         name = feat_node.get("Value")
                 
-                # Fallback: if no local name, use the ID (not ideal but better than nothing)
                 if not name:
                     name = f"Feature_{feature.get('CategoryFeature_ID')}"
 
@@ -201,46 +176,21 @@ def parse_xml_to_json(xml_content, cat_id, cat_name):
         return item
 
     except Exception as e:
-        print(f"Error parsing XML: {e}")
         return None
 
-def download_product_xml(product_path, cat_id, cat_map):
-    """Downloads XML, converts to JSON, and saves."""
+def fetch_product_data(product_path, cat_id, cat_name):
     product_url = f"https://data.icecat.biz/{product_path}"
-    
-    # Create folder structure: products/Mens_Shoes/
-    category_name = cat_map.get(cat_id, "Unknown_Category")
-    safe_cat_name = "".join(x for x in category_name if x.isalnum() or x in " -_").strip().replace(" ", "_")
-    category_dir = os.path.join(OUTPUT_DIR, safe_cat_name)
-    os.makedirs(category_dir, exist_ok=True)
-    
-    # Check if JSON already exists
-    file_name_json = os.path.basename(product_path).replace('.xml', '.json')
-    output_path_json = os.path.join(category_dir, file_name_json)
-
-    if os.path.exists(output_path_json):
-        return # Skip if already done
-
-    # print(f"Processing {product_url}...") 
     try:
         response = requests.get(product_url, auth=get_auth(), timeout=10)
         if response.status_code == 200:
-            # CONVERT XML TO JSON HERE
-            product_data = parse_xml_to_json(response.content, cat_id, category_name)
-            
-            if product_data:
-                with open(output_path_json, 'w', encoding='utf-8') as f:
-                    json.dump(product_data, f, indent=2)
-                print(f"Saved: {file_name_json}")
-            else:
-                print(f"Skipped (Empty Data): {product_url}")
+            return parse_xml_to_json(response.content, cat_id, cat_name)
         else:
-            print(f"Failed to download {product_url} (Status {response.status_code})")
+            return None
     except Exception as e:
         print(f"Error downloading {product_url}: {e}")
+        return None
 
-def download_products():
-    """Main execution loop."""
+def main():
     if not ICECAT_USER or not ICECAT_PASS:
         print("Error: ICECAT_USER/PASS not set in .env")
         return
@@ -252,36 +202,59 @@ def download_products():
     target_ids = get_target_category_ids(cat_map)
     
     if not target_ids:
-        print("No target categories found. Check your spelling in TARGET_CATEGORIES.")
+        print("No target categories found.")
         return
 
+    # Create output directory
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    print(f"Scanning index for {len(target_ids)} categories...")
     
-    # Track counts to limit downloads
+    print(f"Starting downloads into '{OUTPUT_DIR}/' folder...")
+    
     cat_counts = {cid: 0 for cid in target_ids}
+    total_saved = 0
     
     try:
         with gzip.open(FILES_INDEX_XML, 'rb') as f:
             context = ET.iterparse(f, events=('end',))
+            
             for _, elem in context:
                 if elem.tag == 'file':
                     cid = elem.get('Catid')
+                    
                     if cid in target_ids:
-                        # Check limit
                         if LIMIT_PER_CATEGORY > 0 and cat_counts[cid] >= LIMIT_PER_CATEGORY:
                             elem.clear()
                             continue
                             
                         product_path = elem.get('path')
                         if product_path:
-                            download_product_xml(product_path, cid, cat_map)
-                            cat_counts[cid] += 1
+                            # 1. Get readable Category Name
+                            raw_cat_name = cat_map.get(cid, "Unknown")
                             
+                            # 2. Fetch Data
+                            product_data = fetch_product_data(product_path, cid, raw_cat_name)
+                            
+                            if product_data:
+                                # 3. Generate Filename: products/Mens_Shoes.ndjson
+                                safe_name = raw_cat_name.replace(" ", "_").replace("/", "-").replace("&", "and")
+                                file_path = os.path.join(OUTPUT_DIR, f"{safe_name}.ndjson")
+                                
+                                # 4. Append to that specific file
+                                with open(file_path, 'a', encoding='utf-8') as outfile:
+                                    outfile.write(json.dumps(product_data) + "\n")
+                                
+                                cat_counts[cid] += 1
+                                total_saved += 1
+                                
+                                if total_saved % 5 == 0:
+                                    print(f"   Saved {total_saved} products... (Last: {raw_cat_name})")
+
                     elem.clear()
+                    
     except FileNotFoundError:
         print(f"Error: {FILES_INDEX_XML} missing.")
+        
+    print(f"\nDone! Total {total_saved} products saved.")
 
 if __name__ == "__main__":
-    download_products()
+    main()

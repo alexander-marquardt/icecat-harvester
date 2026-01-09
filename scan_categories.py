@@ -7,6 +7,7 @@ import os
 # Files
 INDEX_FILE = "files.index.xml.gz"
 MAP_FILE = "categories.csv"
+OUTPUT_FILE = "category_counts.csv"  
 
 def load_category_map():
     cat_map = {}
@@ -40,12 +41,29 @@ def scan_categories():
         print(f"Error: {INDEX_FILE} missing. Run the harvester first to download the index.")
         return
 
-    print("\n--- TOP 30 CATEGORIES BY VOLUME ---")
+    # 2. Write ALL counts to CSV
+    print(f"Writing complete list to {OUTPUT_FILE}...")
+    try:
+        with open(OUTPUT_FILE, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(['ID', 'Count', 'Name']) # Header
+            
+            # most_common() with no arguments returns ALL items, sorted by count descending
+            for cat_id, count in counts.most_common():
+                name = cat_map.get(cat_id, "Unknown Category")
+                writer.writerow([cat_id, count, name])
+                
+        print("Success! File saved.")
+        
+    except Exception as e:
+        print(f"Error writing to CSV: {e}")
+
+    # 3. Print Top 20 to Console for quick check
+    print("\n--- TOP 20 CATEGORIES BY VOLUME ---")
     print(f"{'ID':<10} | {'Count':<10} | {'Name'}")
     print("-" * 50)
     
-    for cat_id, count in counts.most_common(30):
-        # Look up name in our CSV map
+    for cat_id, count in counts.most_common(20):
         name = cat_map.get(cat_id, "Unknown Category")
         print(f"{cat_id:<10} | {count:<10} | {name}")
 
