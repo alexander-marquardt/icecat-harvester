@@ -23,7 +23,7 @@ This project allows you to download product catalogs by category, automatically 
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/YOUR_USERNAME/icecat-harvester.git](https://github.com/YOUR_USERNAME/icecat-harvester.git)
+    git clone https://github.com/alexander-marquardt//icecat-harvester.git
     cd icecat-harvester
     ```
 
