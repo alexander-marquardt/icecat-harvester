@@ -71,17 +71,13 @@ uv run --with requests --with python-dotenv src/downloader.py
 
 ### Output Structure:
 
-Plaintext
-
+```
 products/
 ├── Smartphones.ndjson      # Clean JSON (One product per line)
 ├── Laptops.ndjson
-└── xml_source/             # Raw source files for debugging
-    ├── Smartphones/
-    │   ├── 12345.xml
-    │   └── ...
+```
 
-$$$ 4. Check Statistics (Optional)
+### 4. Check Statistics (Optional)
 See how many products you have found per category in the index.
 
 ```
