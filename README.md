@@ -49,20 +49,33 @@ First, download the latest mapping of Category IDs to Names. This ensures you ar
 uv run --with requests --with python-dotenv src/get_category_names.py
 ```
 
-### 2. Configure Your Targets
-Open src/downloader.py and modify the TARGET_CATEGORIES list to match the products you want:
+### 2. Check Statistics (Optional)
+See how many products you have found per category in the index.
+
+```
+uv run --with requests src/stats.py
+```
+
+### 3. Configure Your Targets
+Open targetx.txt and modify the list to match the products you want:
 
 Python
 
 ```
-TARGET_CATEGORIES = [
-    "Smartphones",
-    "Laptops",
-    "Shoes"
-]
+Laptops
+Laptop Spare Parts
+PCs/Workstations
+Tablets
+Mobile Phone Cases
+Mobile Phones
+Notebooks
+Smartphones
+Smartwatches
+TVs
+TV Mounts & Stands
 ```
 
-### 3. Run the Downloader
+### 4. Run the Downloader
 Start the harvest. The script will download the index, find matching products, and save them to the products/ directory.
 
 ```
@@ -77,12 +90,7 @@ products/
 ├── Laptops.ndjson
 ```
 
-### 4. Check Statistics (Optional)
-See how many products you have found per category in the index.
 
-```
-uv run --with requests src/stats.py
-```
 
 ### Data License & Attribution
 This repository contains code to access data provided by Icecat.
