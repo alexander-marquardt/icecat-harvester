@@ -76,12 +76,14 @@ def load_category_map():
 
 def get_target_category_ids(cat_map, target_names):
     target_ids = []
-    target_names_lower = [t.lower() for t in target_names]
+    # Create a set of lowercase targets for fast, exact lookup
+    target_names_lower = set(t.lower() for t in target_names)
+    
     for cat_id, name in cat_map.items():
-        for target in target_names_lower:
-            if target in name.lower():
-                target_ids.append(cat_id)
-                break
+        # strict equality check
+        if name.lower() in target_names_lower:
+            target_ids.append(cat_id)
+            
     return list(set(target_ids))
 
 def fast_extract_attribute(line, attr):
