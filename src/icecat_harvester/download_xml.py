@@ -1,22 +1,25 @@
 import requests
 import gzip
-import xml.etree.ElementTree as ET
-from requests.auth import HTTPBasicAuth
 import os
 import csv
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from requests.auth import HTTPBasicAuth
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from dotenv import load_dotenv
 from tqdm import tqdm
+import shutil
 
 # --- PATH CONFIGURATION ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# Go up TWO levels to find project root (icecat-harvester/)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 XML_SAVE_DIR = os.path.join(DATA_DIR, "xml_source")
 TARGETS_FILE = os.path.join(PROJECT_ROOT, "targets.txt")
 CATEGORIES_CSV = os.path.join(DATA_DIR, "categories.csv")
-FILES_INDEX_XML = os.path.join(DATA_DIR, "files.index.xml.gz")
+FILES_INDEX_GZ = os.path.join(DATA_DIR, "files.index.xml.gz")
+FILES_INDEX_RAW = os.path.join(DATA_DIR, "files.index.xml")
 
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
@@ -24,13 +27,19 @@ ICECAT_USER = os.getenv('ICECAT_USER')
 ICECAT_PASS = os.getenv('ICECAT_PASS')
 FILES_INDEX_URL = "https://data.icecat.biz/export/freexml/EN/files.index.xml.gz"
 
-def get_auth():
-    return HTTPBasicAuth(ICECAT_USER, ICECAT_PASS)
+# --- NETWORK CONFIGURATION ---
+MAX_WORKERS = 16  # Increased workers since most requests will be fast 404s
+TIMEOUT = 5       # Lower timeout to fail faster on bad links
+
+def create_session():
+    s = requests.Session()
+    s.auth = HTTPBasicAuth(ICECAT_USER, ICECAT_PASS)
+    retries = Retry(total=2, backoff_factor=0.5, status_forcelist=[500, 502, 503])
+    s.mount('https://', HTTPAdapter(max_retries=retries))
+    return s
 
 def load_targets():
-    if not os.path.exists(TARGETS_FILE):
-        print("Error: targets.txt not found.")
-        return []
+    if not os.path.exists(TARGETS_FILE): return []
     targets = []
     with open(TARGETS_FILE, "r", encoding="utf-8") as f:
         for line in f:
@@ -38,23 +47,23 @@ def load_targets():
                 targets.append(line.strip())
     return targets
 
-def download_files_index():
+def ensure_index_ready():
     os.makedirs(DATA_DIR, exist_ok=True)
-    if not os.path.exists(FILES_INDEX_XML):
-        print(f"Downloading Index (This happens once)...")
-        r = requests.get(FILES_INDEX_URL, auth=get_auth(), stream=True)
+    if not os.path.exists(FILES_INDEX_RAW) and not os.path.exists(FILES_INDEX_GZ):
+        print(f"Downloading Index...")
+        r = requests.get(FILES_INDEX_URL, auth=HTTPBasicAuth(ICECAT_USER, ICECAT_PASS), stream=True)
         total_size = int(r.headers.get('content-length', 0))
-        
-        with open(FILES_INDEX_XML, 'wb') as f, tqdm(
-            desc="Downloading Index",
-            total=total_size,
-            unit='iB',
-            unit_scale=True,
-            unit_divisor=1024,
-        ) as bar:
+        with open(FILES_INDEX_GZ, 'wb') as f, tqdm(total=total_size, unit='B', unit_scale=True, desc="Downloading") as bar:
             for chunk in r.iter_content(chunk_size=8192):
-                size = f.write(chunk)
-                bar.update(size)
+                f.write(chunk)
+                bar.update(len(chunk))
+
+    if os.path.exists(FILES_INDEX_GZ) and not os.path.exists(FILES_INDEX_RAW):
+        print("Unzipping index...")
+        with gzip.open(FILES_INDEX_GZ, 'rb') as f_in:
+            with open(FILES_INDEX_RAW, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+    return FILES_INDEX_RAW
 
 def load_category_map():
     cat_map = {}
@@ -75,88 +84,124 @@ def get_target_category_ids(cat_map, target_names):
                 break
     return list(set(target_ids))
 
-def download_xml_only(product_path, cat_name):
-    """Downloads XML and saves it to disk."""
-    product_url = f"https://data.icecat.biz/{product_path}"
-    
-    safe_cat_name = cat_name.replace(" ", "_").replace("/", "-").replace("&", "and")
-    xml_cat_dir = os.path.join(XML_SAVE_DIR, safe_cat_name)
+def fast_extract_attribute(line, attr):
+    key = f'{attr}="'
+    start = line.find(key)
+    if start == -1: return None
+    start += len(key)
+    end = line.find('"', start)
+    if end == -1: return None
+    return line[start:end]
+
+def get_local_path(product_path, cat_name):
     filename = os.path.basename(product_path)
-    local_path = os.path.join(xml_cat_dir, filename)
+    safe_cat_name = cat_name.replace(" ", "_").replace("/", "-").replace("&", "and")
+    return os.path.join(XML_SAVE_DIR, safe_cat_name, filename)
 
-    if os.path.exists(local_path):
-        return False # Skipped
-
+def download_file(session, url, local_path):
+    """
+    Returns: 
+    1 = Downloaded
+    0 = Failed (Network)
+    -1 = Restricted (404/Access Denied)
+    """
+    if os.path.exists(local_path): return 1 # Already have it
+    
     try:
-        os.makedirs(xml_cat_dir, exist_ok=True)
-        response = requests.get(product_url, auth=get_auth(), timeout=10)
-        if response.status_code == 200:
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        resp = session.get(url, timeout=TIMEOUT)
+        
+        if resp.status_code == 200:
             with open(local_path, 'wb') as f:
-                f.write(response.content)
-            return True # Downloaded
-    except Exception as e:
-        print(f"Error downloading {product_url}: {e}")
-    return False
+                f.write(resp.content)
+            return 1
+        elif resp.status_code == 404:
+            # Icecat returns 404 for restricted items in the free index
+            return -1
+        elif "restricted" in resp.text.lower():
+            return -1
+            
+    except Exception:
+        pass 
+    return 0
 
 def main():
     if not ICECAT_USER:
-        print("Error: Credentials missing in .env")
+        print("Error: Credentials missing.")
         return
 
     targets = load_targets()
-    if not targets: 
-        print("No targets found in targets.txt")
-        return
+    if not targets: return
 
-    download_files_index()
+    index_file = ensure_index_ready()
     cat_map = load_category_map()
-    target_ids = get_target_category_ids(cat_map, targets)
+    target_ids = set(get_target_category_ids(cat_map, targets))
     
     if not target_ids:
-        print("No matching category IDs found. Run 'get_category_names' first.")
+        print("No matching categories found.")
         return
 
-    print(f"Scanning index for {len(target_ids)} categories...")
-
-    total_new = 0
-    total_skipped = 0
+    # --- PHASE 1: SCAN ---
+    print(f"\n--- Phase 1: Auditing Index ({len(target_ids)} categories) ---")
+    missing_files = [] 
     
-    # Get total file size for the percentage bar
-    file_size = os.path.getsize(FILES_INDEX_XML)
+    file_size = os.path.getsize(index_file)
+    with open(index_file, 'r', encoding='utf-8', errors='ignore') as f:
+        with tqdm(total=file_size, unit='B', unit_scale=True, desc="Scanning Index") as pbar:
+            accumulated_bytes = 0
+            for line in f:
+                accumulated_bytes += len(line)
+                if accumulated_bytes > 5 * 1024 * 1024: 
+                    pbar.update(accumulated_bytes)
+                    accumulated_bytes = 0
 
-    try:
-        # We open the GZIP file, but we track progress based on BYTES read from the file object
-        with gzip.open(FILES_INDEX_XML, 'rb') as f:
-            # We create a progress bar linked to the file size
-            with tqdm(total=file_size, unit='B', unit_scale=True, desc="Processing Index") as pbar:
+                if "<file " not in line: continue
                 
-                context = ET.iterparse(f, events=('end',))
-                last_pos = 0
+                cat_id = fast_extract_attribute(line, "Catid")
+                if cat_id and cat_id in target_ids:
+                    path = fast_extract_attribute(line, "path")
+                    if path:
+                        cat_name = cat_map.get(cat_id, "Unknown")
+                        local_path = get_local_path(path, cat_name)
+                        
+                        if not os.path.exists(local_path):
+                            full_url = f"https://data.icecat.biz/{path}"
+                            missing_files.append((full_url, local_path))
+            
+            pbar.update(accumulated_bytes)
 
-                for _, elem in context:
-                    # Update progress bar based on current file position
-                    current_pos = f.fileobj.tell()
-                    pbar.update(current_pos - last_pos)
-                    last_pos = current_pos
+    if not missing_files:
+        print("All files up to date!")
+        return
 
-                    if elem.tag == 'file':
-                        cid = elem.get('Catid')
-                        if cid in target_ids:
-                            path = elem.get('path')
-                            if path:
-                                cat_name = cat_map.get(cid, "Unknown")
-                                downloaded = download_xml_only(path, cat_name)
-                                if downloaded:
-                                    total_new += 1
-                                    pbar.set_postfix(new=total_new) # Show count in bar
-                                else:
-                                    total_skipped += 1
-                        elem.clear()
+    # --- PHASE 2: DOWNLOAD ---
+    print(f"\n--- Phase 2: Attempting {len(missing_files)} remaining files ---")
+    print(f"Note: High 'Restricted' count is normal for Open Icecat.\n")
+    
+    session = create_session()
+    
+    total_dl = 0
+    total_restricted = 0
+    
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [executor.submit(download_file, session, url, path) for url, path in missing_files]
+        
+        # We use a custom bar format to show Restricted counts clearly
+        with tqdm(total=len(futures), unit="file", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}, {rate_fmt} {postfix}]") as pbar:
+            for future in as_completed(futures):
+                result = future.result()
+                if result == 1:
+                    total_dl += 1
+                elif result == -1:
+                    total_restricted += 1
+                
+                # Update the postfix to show the stats live
+                pbar.set_postfix(new=total_dl, restricted=total_restricted)
+                pbar.update(1)
 
-    except Exception as e:
-        print(f"\nError reading index: {e}")
-
-    print(f"\nDone. Downloaded: {total_new}. Skipped (Already existed): {total_skipped}.")
+    print(f"\nSync Complete.")
+    print(f"Downloaded: {total_dl}")
+    print(f"Restricted (Skipped): {total_restricted}")
 
 if __name__ == "__main__":
     main()
