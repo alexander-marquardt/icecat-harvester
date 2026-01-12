@@ -5,11 +5,13 @@ from requests.auth import HTTPBasicAuth
 import os
 import csv
 from dotenv import load_dotenv
-import sys
+from tqdm import tqdm
 
 # --- PATH CONFIGURATION ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Go up TWO levels to find project root (icecat-harvester/)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
+
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 XML_SAVE_DIR = os.path.join(DATA_DIR, "xml_source")
 TARGETS_FILE = os.path.join(PROJECT_ROOT, "targets.txt")
@@ -39,11 +41,20 @@ def load_targets():
 def download_files_index():
     os.makedirs(DATA_DIR, exist_ok=True)
     if not os.path.exists(FILES_INDEX_XML):
-        print(f"Downloading Index...")
+        print(f"Downloading Index (This happens once)...")
         r = requests.get(FILES_INDEX_URL, auth=get_auth(), stream=True)
-        with open(FILES_INDEX_XML, 'wb') as f:
+        total_size = int(r.headers.get('content-length', 0))
+        
+        with open(FILES_INDEX_XML, 'wb') as f, tqdm(
+            desc="Downloading Index",
+            total=total_size,
+            unit='iB',
+            unit_scale=True,
+            unit_divisor=1024,
+        ) as bar:
             for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
+                size = f.write(chunk)
+                bar.update(size)
 
 def load_category_map():
     cat_map = {}
@@ -65,16 +76,14 @@ def get_target_category_ids(cat_map, target_names):
     return list(set(target_ids))
 
 def download_xml_only(product_path, cat_name):
-    """Downloads XML and saves it to disk. Does NOT parse."""
+    """Downloads XML and saves it to disk."""
     product_url = f"https://data.icecat.biz/{product_path}"
     
-    # Calculate destination
     safe_cat_name = cat_name.replace(" ", "_").replace("/", "-").replace("&", "and")
     xml_cat_dir = os.path.join(XML_SAVE_DIR, safe_cat_name)
     filename = os.path.basename(product_path)
     local_path = os.path.join(xml_cat_dir, filename)
 
-    # SKIP if already exists
     if os.path.exists(local_path):
         return False # Skipped
 
@@ -91,39 +100,63 @@ def download_xml_only(product_path, cat_name):
 
 def main():
     if not ICECAT_USER:
-        print("Error: Credentials missing.")
+        print("Error: Credentials missing in .env")
         return
 
     targets = load_targets()
-    if not targets: return
+    if not targets: 
+        print("No targets found in targets.txt")
+        return
 
     download_files_index()
     cat_map = load_category_map()
     target_ids = get_target_category_ids(cat_map, targets)
     
-    print(f"Checking for new XMLs in {len(target_ids)} categories...")
+    if not target_ids:
+        print("No matching category IDs found. Run 'get_category_names' first.")
+        return
+
+    print(f"Scanning index for {len(target_ids)} categories...")
 
     total_new = 0
     total_skipped = 0
     
-    with gzip.open(FILES_INDEX_XML, 'rb') as f:
-        context = ET.iterparse(f, events=('end',))
-        for _, elem in context:
-            if elem.tag == 'file':
-                cid = elem.get('Catid')
-                if cid in target_ids:
-                    path = elem.get('path')
-                    if path:
-                        cat_name = cat_map.get(cid, "Unknown")
-                        downloaded = download_xml_only(path, cat_name)
-                        if downloaded:
-                            total_new += 1
-                            if total_new % 100 == 0: print(f"Downloaded {total_new} new XMLs...")
-                        else:
-                            total_skipped += 1
-                elem.clear()
+    # Get total file size for the percentage bar
+    file_size = os.path.getsize(FILES_INDEX_XML)
 
-    print(f"Done. Downloaded: {total_new}. Skipped (Already existed): {total_skipped}.")
+    try:
+        # We open the GZIP file, but we track progress based on BYTES read from the file object
+        with gzip.open(FILES_INDEX_XML, 'rb') as f:
+            # We create a progress bar linked to the file size
+            with tqdm(total=file_size, unit='B', unit_scale=True, desc="Processing Index") as pbar:
+                
+                context = ET.iterparse(f, events=('end',))
+                last_pos = 0
+
+                for _, elem in context:
+                    # Update progress bar based on current file position
+                    current_pos = f.fileobj.tell()
+                    pbar.update(current_pos - last_pos)
+                    last_pos = current_pos
+
+                    if elem.tag == 'file':
+                        cid = elem.get('Catid')
+                        if cid in target_ids:
+                            path = elem.get('path')
+                            if path:
+                                cat_name = cat_map.get(cid, "Unknown")
+                                downloaded = download_xml_only(path, cat_name)
+                                if downloaded:
+                                    total_new += 1
+                                    pbar.set_postfix(new=total_new) # Show count in bar
+                                else:
+                                    total_skipped += 1
+                        elem.clear()
+
+    except Exception as e:
+        print(f"\nError reading index: {e}")
+
+    print(f"\nDone. Downloaded: {total_new}. Skipped (Already existed): {total_skipped}.")
 
 if __name__ == "__main__":
     main()
