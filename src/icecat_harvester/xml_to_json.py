@@ -6,6 +6,7 @@ import hashlib
 import xml.etree.ElementTree as ET
 import argparse
 import random
+import re  # <--- Added this for HTML regex
 from tqdm import tqdm
 
 # --- CONFIGURATION ---
@@ -45,6 +46,16 @@ def load_price_map():
     else:
         print(f"⚠️ Warning: {PRICES_NDJSON} not found. Prices will be estimated heuristics.")
     return p_map
+
+# --- HELPERS ---
+def clean_html_text(text):
+    """Removes HTML tags and normalizes whitespace."""
+    if not text:
+        return ""
+    # 1. Replace HTML tags with a space (prevents "Hello<br>World" becoming "HelloWorld")
+    text = re.sub(r'<[^>]+>', ' ', text)
+    # 2. Collapse multiple spaces/newlines into a single space
+    return " ".join(text.split())
 
 # --- PRICING LOGIC ---
 def get_heuristic_fallback(cat_name):
@@ -178,7 +189,9 @@ def parse_icecat_xml(xml_path, feature_map, price_map):
         if desc_node is not None:
             long_desc = desc_node.get("LongDesc")
             if long_desc and len(long_desc) > 20:
-                desc_parts.append("\n\n" + long_desc)
+                # --- FIX 2: Clean HTML from Description ---
+                clean_desc = clean_html_text(long_desc)
+                desc_parts.append("\n\n" + clean_desc)
 
         if grouped_specs:
             desc_parts.append("\n\nKey Specifications:")
@@ -288,7 +301,8 @@ def main():
                 try:
                     item = parse_icecat_xml(xml_path, feature_map, price_map)
                     
-                    if item and item.get("title"):
+                    # --- FIX 1: Filter out items without images ---
+                    if item and item.get("title") and item.get("image_url"):
                         batch_data.append(item)
                         stats["converted"] += 1
                         if len(batch_data) >= BATCH_SIZE:
@@ -304,6 +318,8 @@ def main():
                 flush_batch(cat_json_dir, batch_data, batch_index)
 
     print(f"\n✅ Converted: {stats['converted']}")
+    print(f"⏭️  Skipped (No Image/Title): {stats['skipped']}")
+    print(f"❌ Errors: {stats['errors']}")
 
 if __name__ == "__main__":
     main()
