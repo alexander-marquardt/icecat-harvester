@@ -6,7 +6,7 @@ import hashlib
 import xml.etree.ElementTree as ET
 import argparse
 import random
-import re  # <--- Added this for HTML regex
+import re
 from tqdm import tqdm
 
 # --- CONFIGURATION ---
@@ -52,9 +52,7 @@ def clean_html_text(text):
     """Removes HTML tags and normalizes whitespace."""
     if not text:
         return ""
-    # 1. Replace HTML tags with a space (prevents "Hello<br>World" becoming "HelloWorld")
     text = re.sub(r'<[^>]+>', ' ', text)
-    # 2. Collapse multiple spaces/newlines into a single space
     return " ".join(text.split())
 
 # --- PRICING LOGIC ---
@@ -123,12 +121,10 @@ def parse_icecat_xml(xml_path, feature_map, price_map):
                     if cfg_id and g_name:
                         group_map[cfg_id] = {"name": g_name, "order": order_no}
 
-        # --- Extract Attributes ---
+        # --- Extract Attributes (UPDATED: Using Dictionary for Flattened Type) ---
         grouped_specs = {}
-        attributes = []     # Renamed from specs_facets
-        attribute_keys = [] # Renamed from specs_names
-        seen_attributes = set() # To prevent duplicates
-
+        attrs = {}  # Dictionary for "flattened" object
+        
         for feature in product.findall(".//ProductFeature"):
             raw_value = feature.get("Presentation_Value")
             if not raw_value or raw_value in ["Y", "N", "Yes", "No"]: continue
@@ -149,21 +145,14 @@ def parse_icecat_xml(xml_path, feature_map, price_map):
                 feat_id = feature.get("Local_ID")
                 feat_name = f"Feature_{feat_id}"
 
-            # Elastic Safe Strings
-            safe_name = feat_name.replace("|", "/")
+            # Sanitize keys for JSON (replace pipes, strict dots)
+            safe_name = feat_name.replace("|", "/").replace(".", "")
             safe_val = raw_value.replace("|", "/")
             
-            # Create Attribute String "Color|Blue"
-            attr_str = f"{safe_name}|{safe_val}"
-            
-            if attr_str not in seen_attributes:
-                attributes.append(attr_str)
-                seen_attributes.add(attr_str)
-            
-            if safe_name not in attribute_keys:
-                attribute_keys.append(safe_name)
+            # Add to Dictionary
+            attrs[safe_name] = safe_val
 
-            # Description Grouping
+            # Description Grouping (Keep this for the text description)
             display_str = f"{feat_name}: {raw_value}"
             group_id = feature.get("CategoryFeatureGroup_ID")
             group_info = group_map.get(group_id)
@@ -189,7 +178,6 @@ def parse_icecat_xml(xml_path, feature_map, price_map):
         if desc_node is not None:
             long_desc = desc_node.get("LongDesc")
             if long_desc and len(long_desc) > 20:
-                # --- FIX 2: Clean HTML from Description ---
                 clean_desc = clean_html_text(long_desc)
                 desc_parts.append("\n\n" + clean_desc)
 
@@ -212,10 +200,10 @@ def parse_icecat_xml(xml_path, feature_map, price_map):
             "image_url": None,
             "price": None, 
             "currency": "EUR",
-            # RENAMED FIELDS
-            "attributes": attributes,         # e.g. ["Color|Red"]
-            "attribute_keys": attribute_keys, # e.g. ["Color"]
-            "categories": []
+            "categories": [],
+            # UPDATED FIELDS
+            "attrs": attrs,                # The Dictionary
+            "attr_keys": list(attrs.keys()) # The List of keys
         }
         
         # Categories & Price
@@ -301,7 +289,6 @@ def main():
                 try:
                     item = parse_icecat_xml(xml_path, feature_map, price_map)
                     
-                    # --- FIX 1: Filter out items without images ---
                     if item and item.get("title") and item.get("image_url"):
                         batch_data.append(item)
                         stats["converted"] += 1
