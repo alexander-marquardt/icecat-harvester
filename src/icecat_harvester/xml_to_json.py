@@ -15,74 +15,106 @@ DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 XML_SOURCE_DIR = os.path.join(DATA_DIR, "xml_source")
 JSON_OUTPUT_DIR = os.path.join(DATA_DIR, "json_products")
 FEATURES_CSV = os.path.join(DATA_DIR, "features.csv")
+# CHANGED: Now looking for NDJSON
+PRICES_NDJSON = os.path.join(DATA_DIR, "price_baselines.ndjson")
 
-# How many products to store in one .ndjson file before creating a new one
 BATCH_SIZE = 1000 
 
+# --- LOADERS ---
 def load_feature_map():
     f_map = {}
     if os.path.exists(FEATURES_CSV):
-        print(f"Loading feature map from {FEATURES_CSV}...")
+        # print(f"Loading feature map from {FEATURES_CSV}...")
         with open(FEATURES_CSV, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
                 f_map[row['ID']] = row['Name']
     return f_map
 
-def estimate_price(prod_id, category_name):
+def load_price_map():
     """
-    Generates a deterministic fake price based on category and ID.
-    This ensures the same product always gets the same price (stable for demos),
-    but the price range is realistic for the category.
+    Loads category base prices from NDJSON.
+    Returns a dict: { "category name (lowercase)": float_price }
+    """
+    p_map = {}
+    if os.path.exists(PRICES_NDJSON):
+        print(f"Loading price baselines from {PRICES_NDJSON}...")
+        try:
+            with open(PRICES_NDJSON, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if not line.strip(): continue
+                    data = json.loads(line)
+                    if "name" in data and "price" in data:
+                        # Normalize key to lowercase for easier matching
+                        p_map[data["name"].lower()] = float(data["price"])
+        except Exception as e:
+            print(f"⚠️ Error reading price map: {e}")
+    else:
+        print(f"⚠️ Warning: {PRICES_NDJSON} not found. Prices will be estimated heuristics.")
+    return p_map
+
+# --- PRICING LOGIC ---
+def get_heuristic_fallback(cat_name):
+    """Fallback if Category Name not in our file."""
+    if not cat_name: return 50.0
+    name = cat_name.lower()
+    
+    # Generic keywords if exact match failed
+    if "server" in name: return 1500
+    if "laptop" in name: return 800
+    if "software" in name: return 100
+    if "cable" in name: return 15
+    return 45.0 
+
+def estimate_price(prod_id, cat_name, brand_name, price_map):
+    """
+    1. Lookup Baseline from Map (using Name).
+    2. If missing, use Heuristic.
+    3. Apply Brand Multiplier.
+    4. Apply Deterministic Randomness.
     """
     if not prod_id: return 0.0
     
-    # 1. Base Randomness (Deterministic)
-    # Hash ID to get a float between 0.0 and 1.0
+    # 1. Determine Base Price
+    base = 50.0
+    found_match = False
+    
+    if cat_name:
+        key = cat_name.lower()
+        if key in price_map:
+            base = price_map[key]
+            found_match = True
+        else:
+            base = get_heuristic_fallback(key)
+
+    # 2. Brand Multiplier (Sensible Tiers)
+    multiplier = 1.0
+    if brand_name:
+        b = brand_name.lower()
+        if b in ["apple", "samsung", "sony", "hp", "dell", "lenovo", "bose", "cisco"]:
+            multiplier = 1.3 # Premium brands
+        elif b in ["trust", "hama", "generic", "startech", "sweex"]:
+            multiplier = 0.8 # Budget brands
+    
+    base = base * multiplier
+
+    # 3. Deterministic Variance (+/- 30%)
+    # Hash ID to get stable random float 0.0-1.0
     hash_val = int(hashlib.md5(prod_id.encode()).hexdigest(), 16)
-    rand_factor = (hash_val % 1000) / 1000.0 # 0.0 to 1.0
+    rand_factor = (hash_val % 1000) / 1000.0 
     
-    # 2. Category Baselines (Approximate average price in EUR)
-    # Add common categories here to make the data look smarter
-    baselines = {
-        "Laptops": 800,
-        "Tablets": 400,
-        "Smartphones": 500,
-        "TVs": 600,
-        "Monitors": 250,
-        "Memory": 80,
-        "Processors": 300,
-        "Hard Drives": 100,
-        "SSD": 120,
-        "Motherboards": 150,
-        "Video Cards": 400,
-        "Cables": 15,
-        "Keyboards": 40,
-        "Mice": 30,
-        "Headphones": 60,
-        "Software": 100,
-        "Servers": 1500,
-        "Printers": 200,
-        "Toner Cartridges": 80
-    }
+    # Formula: Base + (Variance * (Random - 0.5))
+    # e.g. 100 +/- 30
+    variance = base * 0.6 # 60% total range
+    price = base + (variance * (rand_factor - 0.5))
     
-    # Fuzzy matching for category keys
-    base = 50 # Default fallback
-    if category_name:
-        for key, val in baselines.items():
-            if key.lower() in category_name.lower():
-                base = val
-                break
+    # Ensure positive price and nice rounding
+    if price < 1.0: price = 1.0 + rand_factor
     
-    # 3. Calculate Price with Variance
-    # Price = Base +/- 40% variance
-    variance = base * 0.4
-    price = base + (variance * 2 * (rand_factor - 0.5))
-    
-    # Round to "nice" retail numbers (e.g. 19.95 is prettier than 19.9234)
     return round(price, 2)
 
-def parse_icecat_xml(xml_path, feature_map):
+# --- PARSER ---
+def parse_icecat_xml(xml_path, feature_map, price_map):
     try:
         tree = ET.parse(xml_path)
         root = tree.getroot()
@@ -113,7 +145,7 @@ def parse_icecat_xml(xml_path, feature_map):
             raw_value = feature.get("Presentation_Value")
             if not raw_value or raw_value in ["Y", "N", "Yes", "No"]: continue
 
-            # Name Resolution (Name Tag > Map > ID)
+            # Name Resolution
             feat_name = None
             feat_node = feature.find(".//Feature")
             if feat_node is not None:
@@ -129,11 +161,9 @@ def parse_icecat_xml(xml_path, feature_map):
                 feat_id = feature.get("Local_ID")
                 feat_name = f"Feature_{feat_id}"
 
-            # Elastic Safe Strings
             safe_name = feat_name.replace("|", "/")
             safe_val = raw_value.replace("|", "/")
             
-            # Deduplication
             facet_str = f"{safe_name}|{safe_val}"
             if facet_str not in specs_facets:
                 specs_facets.append(facet_str)
@@ -141,7 +171,6 @@ def parse_icecat_xml(xml_path, feature_map):
             if safe_name not in specs_names:
                 specs_names.append(safe_name)
 
-            # Description Grouping
             display_str = f"{feat_name}: {raw_value}"
             group_id = feature.get("CategoryFeatureGroup_ID")
             group_info = group_map.get(group_id)
@@ -186,26 +215,26 @@ def parse_icecat_xml(xml_path, feature_map):
             "brand": brand,
             "description": full_description,
             "image_url": None,
-            "price": None, # Filled below
+            "price": None, 
             "currency": "EUR",
             "specs_facets": specs_facets,
             "specs_names": specs_names,
             "categories": []
         }
         
-        # Categories & Price
-        cat_val = "Unknown"
+        # Categories & Price Logic
         cat_node = product.find(".//Category")
+        cat_name_val = None
+        
         if cat_node is not None:
              cat_name = cat_node.find(".//Name")
              if cat_name is not None:
-                 cat_val = cat_name.get("Value")
-                 item["categories"].append(cat_val)
+                 cat_name_val = cat_name.get("Value")
+                 item["categories"].append(cat_name_val)
 
-        # Generate Sensible Price
-        item["price"] = estimate_price(item["id"], cat_val)
+        # CALL PRICING ENGINE (Using Name Lookup)
+        item["price"] = estimate_price(item["id"], cat_name_val, brand, price_map)
 
-        # Images
         priorities = ["Pic500x500", "Pic", "Original", "HighPic"]
         for pic in product.findall(".//ProductPicture"):
             for attr in priorities:
@@ -218,8 +247,6 @@ def parse_icecat_xml(xml_path, feature_map):
         return item
 
     except Exception:
-        # Swallow parsing errors on individual files to keep the batch moving
-        # (The main loop counts errors)
         raise
 
 def flush_batch(cat_json_dir, batch_data, batch_index):
@@ -232,34 +259,28 @@ def flush_batch(cat_json_dir, batch_data, batch_index):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--limit", type=int, default=0, help="Limit files per category")
-    parser.add_argument("--sample", action="store_true", help="Randomly sample files")
-    parser.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
+    parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--sample", action="store_true")
+    parser.add_argument("--yes", action="store_true")
     args = parser.parse_args()
 
-    # --- 1. Cleanup ---
+    # Clean Output
     if os.path.exists(JSON_OUTPUT_DIR):
         if not args.yes:
             confirm = input(f"⚠️  Overwrite {JSON_OUTPUT_DIR}? [y/N]: ").lower().strip()
             if confirm != 'y': return
         shutil.rmtree(JSON_OUTPUT_DIR)
-    
     os.makedirs(JSON_OUTPUT_DIR, exist_ok=True)
-    print(f"Output Directory: {JSON_OUTPUT_DIR}")
 
-    # --- 2. Resources ---
+    # Load Maps
     feature_map = load_feature_map()
-    if not feature_map:
-        print("⚠️  Warning: Feature map empty. IDs will be used.")
-
-    if not os.path.exists(XML_SOURCE_DIR):
-        print("Error: XML Source missing.")
-        return
+    price_map = load_price_map() # Now loads NDJSON
+    
+    if not os.path.exists(XML_SOURCE_DIR): return
 
     categories = [d for d in os.listdir(XML_SOURCE_DIR) if os.path.isdir(os.path.join(XML_SOURCE_DIR, d))]
     stats = {"converted": 0, "skipped": 0, "errors": 0}
 
-    # --- 3. Processing ---
     with tqdm(categories, unit="cat") as pbar_cat:
         for cat in pbar_cat:
             pbar_cat.set_description(f"Processing {cat[:15]}")
@@ -269,7 +290,6 @@ def main():
             
             if not xml_files: continue
             
-            # Sampling
             if args.limit > 0:
                 if args.sample and len(xml_files) > args.limit:
                     files_to_process = random.sample(xml_files, args.limit)
@@ -280,37 +300,31 @@ def main():
 
             cat_json_dir = os.path.join(JSON_OUTPUT_DIR, cat)
             os.makedirs(cat_json_dir, exist_ok=True)
-            
             batch_data = []
             batch_index = 1
 
             for xml_file in files_to_process:
                 xml_path = os.path.join(cat_dir, xml_file)
                 try:
-                    item = parse_icecat_xml(xml_path, feature_map)
+                    # Pass maps
+                    item = parse_icecat_xml(xml_path, feature_map, price_map)
                     
                     if item and item.get("title"):
                         batch_data.append(item)
                         stats["converted"] += 1
-                        
                         if len(batch_data) >= BATCH_SIZE:
                             flush_batch(cat_json_dir, batch_data, batch_index)
                             batch_data = []
                             batch_index += 1
                     else:
                         stats["skipped"] += 1
-
                 except Exception:
                     stats["errors"] += 1
 
-            # Flush remainder
             if batch_data:
                 flush_batch(cat_json_dir, batch_data, batch_index)
 
-    print("\n--- Complete ---")
-    print(f"✅ Converted: {stats['converted']}")
-    print(f"❌ Skipped:   {stats['skipped']}")
-    print(f"⚠️  Errors:    {stats['errors']}")
+    print(f"\n✅ Converted: {stats['converted']}")
 
 if __name__ == "__main__":
     main()
