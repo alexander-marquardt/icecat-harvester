@@ -15,7 +15,6 @@ DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 XML_SOURCE_DIR = os.path.join(DATA_DIR, "xml_source")
 JSON_OUTPUT_DIR = os.path.join(DATA_DIR, "json_products")
 FEATURES_CSV = os.path.join(DATA_DIR, "features.csv")
-# CHANGED: Now looking for NDJSON
 PRICES_NDJSON = os.path.join(DATA_DIR, "price_baselines.ndjson")
 
 BATCH_SIZE = 1000 
@@ -24,7 +23,6 @@ BATCH_SIZE = 1000
 def load_feature_map():
     f_map = {}
     if os.path.exists(FEATURES_CSV):
-        # print(f"Loading feature map from {FEATURES_CSV}...")
         with open(FEATURES_CSV, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
@@ -32,10 +30,6 @@ def load_feature_map():
     return f_map
 
 def load_price_map():
-    """
-    Loads category base prices from NDJSON.
-    Returns a dict: { "category name (lowercase)": float_price }
-    """
     p_map = {}
     if os.path.exists(PRICES_NDJSON):
         print(f"Loading price baselines from {PRICES_NDJSON}...")
@@ -45,7 +39,6 @@ def load_price_map():
                     if not line.strip(): continue
                     data = json.loads(line)
                     if "name" in data and "price" in data:
-                        # Normalize key to lowercase for easier matching
                         p_map[data["name"].lower()] = float(data["price"])
         except Exception as e:
             print(f"⚠️ Error reading price map: {e}")
@@ -55,11 +48,8 @@ def load_price_map():
 
 # --- PRICING LOGIC ---
 def get_heuristic_fallback(cat_name):
-    """Fallback if Category Name not in our file."""
     if not cat_name: return 50.0
     name = cat_name.lower()
-    
-    # Generic keywords if exact match failed
     if "server" in name: return 1500
     if "laptop" in name: return 800
     if "software" in name: return 100
@@ -67,50 +57,36 @@ def get_heuristic_fallback(cat_name):
     return 45.0 
 
 def estimate_price(prod_id, cat_name, brand_name, price_map):
-    """
-    1. Lookup Baseline from Map (using Name).
-    2. If missing, use Heuristic.
-    3. Apply Brand Multiplier.
-    4. Apply Deterministic Randomness.
-    """
     if not prod_id: return 0.0
     
-    # 1. Determine Base Price
+    # 1. Base Price
     base = 50.0
-    found_match = False
-    
     if cat_name:
         key = cat_name.lower()
         if key in price_map:
             base = price_map[key]
-            found_match = True
         else:
             base = get_heuristic_fallback(key)
 
-    # 2. Brand Multiplier (Sensible Tiers)
+    # 2. Brand Multiplier
     multiplier = 1.0
     if brand_name:
         b = brand_name.lower()
         if b in ["apple", "samsung", "sony", "hp", "dell", "lenovo", "bose", "cisco"]:
-            multiplier = 1.3 # Premium brands
+            multiplier = 1.3 
         elif b in ["trust", "hama", "generic", "startech", "sweex"]:
-            multiplier = 0.8 # Budget brands
+            multiplier = 0.8 
     
     base = base * multiplier
 
-    # 3. Deterministic Variance (+/- 30%)
-    # Hash ID to get stable random float 0.0-1.0
+    # 3. Variance (+/- 30%)
     hash_val = int(hashlib.md5(prod_id.encode()).hexdigest(), 16)
     rand_factor = (hash_val % 1000) / 1000.0 
     
-    # Formula: Base + (Variance * (Random - 0.5))
-    # e.g. 100 +/- 30
-    variance = base * 0.6 # 60% total range
+    variance = base * 0.6 
     price = base + (variance * (rand_factor - 0.5))
     
-    # Ensure positive price and nice rounding
     if price < 1.0: price = 1.0 + rand_factor
-    
     return round(price, 2)
 
 # --- PARSER ---
@@ -123,7 +99,7 @@ def parse_icecat_xml(xml_path, feature_map, price_map):
             if root.tag.endswith("Product"): product = root
             else: return None
 
-        # --- 1. Map Local Groups ---
+        # --- Map Groups ---
         group_map = {} 
         for cfg in product.findall(".//CategoryFeatureGroup"):
             cfg_id = cfg.get("ID")
@@ -136,10 +112,11 @@ def parse_icecat_xml(xml_path, feature_map, price_map):
                     if cfg_id and g_name:
                         group_map[cfg_id] = {"name": g_name, "order": order_no}
 
-        # --- 2. Extract Features ---
+        # --- Extract Attributes ---
         grouped_specs = {}
-        specs_facets = [] 
-        specs_names = []  
+        attributes = []     # Renamed from specs_facets
+        attribute_keys = [] # Renamed from specs_names
+        seen_attributes = set() # To prevent duplicates
 
         for feature in product.findall(".//ProductFeature"):
             raw_value = feature.get("Presentation_Value")
@@ -161,16 +138,21 @@ def parse_icecat_xml(xml_path, feature_map, price_map):
                 feat_id = feature.get("Local_ID")
                 feat_name = f"Feature_{feat_id}"
 
+            # Elastic Safe Strings
             safe_name = feat_name.replace("|", "/")
             safe_val = raw_value.replace("|", "/")
             
-            facet_str = f"{safe_name}|{safe_val}"
-            if facet_str not in specs_facets:
-                specs_facets.append(facet_str)
+            # Create Attribute String "Color|Blue"
+            attr_str = f"{safe_name}|{safe_val}"
             
-            if safe_name not in specs_names:
-                specs_names.append(safe_name)
+            if attr_str not in seen_attributes:
+                attributes.append(attr_str)
+                seen_attributes.add(attr_str)
+            
+            if safe_name not in attribute_keys:
+                attribute_keys.append(safe_name)
 
+            # Description Grouping
             display_str = f"{feat_name}: {raw_value}"
             group_id = feature.get("CategoryFeatureGroup_ID")
             group_info = group_map.get(group_id)
@@ -185,7 +167,7 @@ def parse_icecat_xml(xml_path, feature_map, price_map):
                     grouped_specs["General"] = {"order": 9999, "items": []}
                 grouped_specs["General"]["items"].append(display_str)
 
-        # --- 3. Synthesize Description ---
+        # --- Synthesize Description ---
         title = product.get("Title") or ""
         brand = ""
         supplier = product.find(".//Supplier")
@@ -208,7 +190,7 @@ def parse_icecat_xml(xml_path, feature_map, price_map):
 
         full_description = "\n".join(desc_parts)
 
-        # --- 4. Final Output ---
+        # --- Final Output ---
         item = {
             "id": product.get("ID"),
             "title": title,
@@ -217,12 +199,13 @@ def parse_icecat_xml(xml_path, feature_map, price_map):
             "image_url": None,
             "price": None, 
             "currency": "EUR",
-            "specs_facets": specs_facets,
-            "specs_names": specs_names,
+            # RENAMED FIELDS
+            "attributes": attributes,         # e.g. ["Color|Red"]
+            "attribute_keys": attribute_keys, # e.g. ["Color"]
             "categories": []
         }
         
-        # Categories & Price Logic
+        # Categories & Price
         cat_node = product.find(".//Category")
         cat_name_val = None
         
@@ -232,7 +215,6 @@ def parse_icecat_xml(xml_path, feature_map, price_map):
                  cat_name_val = cat_name.get("Value")
                  item["categories"].append(cat_name_val)
 
-        # CALL PRICING ENGINE (Using Name Lookup)
         item["price"] = estimate_price(item["id"], cat_name_val, brand, price_map)
 
         priorities = ["Pic500x500", "Pic", "Original", "HighPic"]
@@ -264,7 +246,6 @@ def main():
     parser.add_argument("--yes", action="store_true")
     args = parser.parse_args()
 
-    # Clean Output
     if os.path.exists(JSON_OUTPUT_DIR):
         if not args.yes:
             confirm = input(f"⚠️  Overwrite {JSON_OUTPUT_DIR}? [y/N]: ").lower().strip()
@@ -272,9 +253,8 @@ def main():
         shutil.rmtree(JSON_OUTPUT_DIR)
     os.makedirs(JSON_OUTPUT_DIR, exist_ok=True)
 
-    # Load Maps
     feature_map = load_feature_map()
-    price_map = load_price_map() # Now loads NDJSON
+    price_map = load_price_map()
     
     if not os.path.exists(XML_SOURCE_DIR): return
 
@@ -306,7 +286,6 @@ def main():
             for xml_file in files_to_process:
                 xml_path = os.path.join(cat_dir, xml_file)
                 try:
-                    # Pass maps
                     item = parse_icecat_xml(xml_path, feature_map, price_map)
                     
                     if item and item.get("title"):
