@@ -154,9 +154,6 @@ The xml_to_json script produces NDJSON (Newline Delimited JSON) files. Each line
 | `attrs` | object | **Flattened Dictionary** of technical specifications. |
 | `attr_keys` | list | List of all keys available in `attrs` (used for search facets). |
 
-## Example cleaned data
-![Demo screenshot](assets/cleaned-data.png)
-
 ### Example Record
 
 ```
@@ -177,6 +174,9 @@ The xml_to_json script produces NDJSON (Newline Delimited JSON) files. Each line
   "attr_keys": ["Processor family", "Internal memory", "Weight"]
 }
 ```
+
+## Example search application built with the cleaned data
+![Demo screenshot](assets/cleaned-data.png)
 
 ## License
 
