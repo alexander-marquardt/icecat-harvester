@@ -137,11 +137,43 @@ This will create a new directory, `data/products_combined/`, containing the comb
 
 ## Output Format
 
-The output JSON files (`data/products/Category.ndjson`) use a flat structure optimized for search engines:
+The xml_to_json script produces NDJSON (Newline Delimited JSON) files. Each line is a standalone JSON object representing a single product.
 
-```json
-{"id": "12345", "title": "Product Name", "brand": "Brand", "category": "Laptops", "images": ["url1", "url2"], "specs": {"Screen Size": "15 inch", "RAM": "16GB"}}
-{"id": "67890", ...}
+
+### Schema Overview
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `id` | string | Unique Icecat product identifier. |
+| `title` | string | Full product name and marketing title. |
+| `brand` | string | Manufacturer name (e.g., Lenovo, HP). |
+| `description` | string | Cleaned text description (HTML tags removed). |
+| `price` | float | Estimated/Heuristic price in EUR. |
+| `image_url` | string | Primary high-resolution product image URL. |
+| `categories` | list | List of category names assigned to the product. |
+| `attrs` | object | **Flattened Dictionary** of technical specifications. |
+| `attr_keys` | list | List of all keys available in `attrs` (used for search facets). |
+
+
+### Example Record
+
+```
+{
+  "id": "91778569",
+  "title": "Lenovo Legion 5 15ARH05H AMD Ryzen™ 7 4800H Laptop...",
+  "brand": "Lenovo",
+  "description": "Minimal meets mighty... Thermally tuned via Legion Coldfront 2.0.",
+  "price": 865.33,
+  "currency": "EUR",
+  "image_url": "https://images.icecat.biz/img/gallery_mediums/79117985_5269963235.jpg",
+  "categories": ["Laptops"],
+  "attrs": {
+    "Processor family": "AMD Ryzen™ 7",
+    "Internal memory": "16 GB",
+    "Weight": "2.46 kg"
+  },
+  "attr_keys": ["Processor family", "Internal memory", "Weight"]
+}
 ```
 
 ## License
