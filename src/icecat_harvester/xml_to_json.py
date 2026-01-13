@@ -12,7 +12,6 @@ from tqdm import tqdm
 
 # --- CONFIGURATION ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# Moves up 2 levels: src/icecat_harvester -> src -> root
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
 
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
@@ -30,8 +29,7 @@ def load_feature_map():
     if os.path.exists(FEATURES_CSV):
         with open(FEATURES_CSV, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
-            for row in reader:
-                f_map[row['ID']] = row['Name']
+            for row in reader: f_map[row['ID']] = row['Name']
     return f_map
 
 def load_price_map():
@@ -42,8 +40,7 @@ def load_price_map():
                 for line in f:
                     if not line.strip(): continue
                     data = json.loads(line)
-                    if "name" in data and "price" in data:
-                        p_map[data["name"].lower()] = float(data["price"])
+                    if "name" in data and "price" in data: p_map[data["name"].lower()] = float(data["price"])
         except Exception: pass
     return p_map
 
@@ -68,7 +65,16 @@ def estimate_price(prod_id, cat_name, brand_name, price_map):
     if cat_name:
         key = cat_name.lower()
         base = price_map.get(key, get_heuristic_fallback(key))
-    multiplier = 1.3 if brand_name and brand_name.lower() in ["apple", "samsung", "sony", "hp", "dell", "lenovo"] else 1.0
+    
+    # Brand Premium/Discount Logic
+    multiplier = 1.0
+    if brand_name:
+        b = brand_name.lower()
+        if b in ["apple", "samsung", "sony", "hp", "dell", "lenovo", "bose", "cisco"]:
+            multiplier = 1.3 
+        elif b in ["trust", "hama", "generic", "startech", "sweex"]:
+            multiplier = 0.8 
+    
     base *= multiplier
     hash_val = int(hashlib.md5(prod_id.encode()).hexdigest(), 16)
     variance = base * 0.6 
@@ -81,26 +87,65 @@ def parse_icecat_xml(xml_path, feature_map, price_map):
         tree = ET.parse(xml_path)
         root = tree.getroot()
         product = root.find(".//Product")
-        if product is None: return None
+        if product is None: 
+            if root.tag.endswith("Product"): product = root
+            else: return None
 
-        attrs = {}
+        # Map Groups for Description synthesis
+        group_map = {} 
+        for cfg in product.findall(".//CategoryFeatureGroup"):
+            cfg_id = cfg.get("ID")
+            order_no = int(cfg.get("No") or 999)
+            fg_node = cfg.find(".//FeatureGroup")
+            if fg_node is not None:
+                name_node = fg_node.find(".//Name")
+                if name_node is not None:
+                    g_name = name_node.get("Value")
+                    if cfg_id and g_name:
+                        group_map[cfg_id] = {"name": g_name, "order": order_no}
+
+        grouped_specs = {}
+        attrs = {}  
+        
         for feature in product.findall(".//ProductFeature"):
             raw_value = feature.get("Presentation_Value")
             if not raw_value or raw_value in ["Y", "N", "Yes", "No"]: continue
-            
+
             feat_node = feature.find(".//Feature/Name")
             feat_name = feat_node.get("Value") if feat_node is not None else feature_map.get(feature.get("Local_ID"), f"Feature_{feature.get('Local_ID')}")
-            if feat_name:
-                attrs[feat_name.replace(".", "")] = raw_value
+            
+            safe_name = feat_name.replace("|", "/").replace(".", "")
+            attrs[safe_name] = raw_value.replace("|", "/")
+
+            group_id = feature.get("CategoryFeatureGroup_ID")
+            group_info = group_map.get(group_id, {"name": "General", "order": 9999})
+            g_name = group_info['name']
+            if g_name not in grouped_specs:
+                grouped_specs[g_name] = {"order": group_info['order'], "items": []}
+            grouped_specs[g_name]["items"].append(f"{feat_name}: {raw_value}")
 
         title = product.get("Title") or ""
         brand = (product.find(".//Supplier").get("Name") if product.find(".//Supplier") is not None else "")
         
+        # Synthesize Markdown Description
+        desc_parts = [title]
+        desc_node = product.find(".//ProductDescription")
+        if desc_node is not None:
+            long_desc = desc_node.get("LongDesc")
+            if long_desc and len(long_desc) > 20:
+                desc_parts.append("\n\n" + clean_html_text(long_desc))
+
+        if grouped_specs:
+            desc_parts.append("\n\nKey Specifications:")
+            for g_name, g_data in sorted(grouped_specs.items(), key=lambda x: x[1]['order']):
+                items_str = "; ".join(g_data['items'])
+                if items_str: desc_parts.append(f"- **{g_name}**: {items_str}")
+
         item = {
             "id": product.get("ID"),
             "title": title,
             "brand": brand,
-            "description": title, 
+            "description": "\n".join(desc_parts),
             "image_url": None,
             "price": 0.0, 
             "currency": "EUR",
@@ -110,18 +155,19 @@ def parse_icecat_xml(xml_path, feature_map, price_map):
         }
         
         cat_node = product.find(".//Category/Name")
-        if cat_node is not None:
-            cat_val = cat_node.get("Value")
-            item["categories"].append(cat_val)
-            item["price"] = estimate_price(item["id"], cat_val, brand, price_map)
-        else:
-            item["price"] = estimate_price(item["id"], None, brand, price_map)
+        cat_val = cat_node.get("Value") if cat_node is not None else None
+        if cat_val: item["categories"].append(cat_val)
+        item["price"] = estimate_price(item["id"], cat_val, brand, price_map)
 
+        # High-Quality Image Filtering
+        priorities = ["Pic500x500", "Pic", "Original", "HighPic"]
         for pic in product.findall(".//ProductPicture"):
-            url = pic.get("Pic500x500") or pic.get("Pic")
-            if url: 
-                item["image_url"] = url
-                break
+            for attr in priorities:
+                url = pic.get(attr)
+                if url and "http" in url:
+                    item["image_url"] = url
+                    break
+            if item["image_url"]: break
 
         return item
     except Exception: return None
@@ -130,8 +176,7 @@ def flush_batch(cat_json_dir, batch_data, batch_idx):
     if not batch_data: return
     filepath = os.path.join(cat_json_dir, f"batch_{batch_idx:03d}.ndjson")
     with open(filepath, "w", encoding="utf-8") as f:
-        for item in batch_data:
-            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+        for item in batch_data: f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
 # --- MAIN ---
 def main():
@@ -148,92 +193,89 @@ def main():
     feature_map = load_feature_map()
     price_map = load_price_map()
 
-    # Determine Output Directory
     is_sampling = args.generate_sample_data > 0
-    if is_sampling:
-        out_root = SAMPLE_DATA_DIR
-        if os.path.exists(SAMPLE_DATA_DIR): shutil.rmtree(SAMPLE_DATA_DIR)
-        os.makedirs(SAMPLE_DATA_DIR, exist_ok=True)
-        print(f"🚀 SEEDING SAMPLES (N={args.generate_sample_data}, seed={args.seed})")
-    else:
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        out_root = os.path.join(JSON_OUTPUT_DIR, args.output_subdir or timestamp)
-        if os.path.exists(out_root) and not args.yes:
-            if input(f"⚠️ Overwrite {out_root}? [y/N]: ").lower() != 'y': return
-            shutil.rmtree(out_root)
-        os.makedirs(out_root, exist_ok=True)
-        print(f"📦 PRODUCTION RUN -> {out_root}")
+    out_root = SAMPLE_DATA_DIR if is_sampling else os.path.join(JSON_OUTPUT_DIR, args.output_subdir or datetime.now().strftime("%Y%m%d-%H%M%S"))
 
-    # Initial fast scan for categories
+    if os.path.exists(out_root) and not args.yes:
+        if input(f"⚠️ Overwrite {out_root}? [y/N]: ").lower() != 'y': return
+        shutil.rmtree(out_root)
+    os.makedirs(out_root, exist_ok=True)
+
     categories = sorted([d for d in os.listdir(XML_SOURCE_DIR) if os.path.isdir(os.path.join(XML_SOURCE_DIR, d))])
-    total_written = 0
+    
+    # PHASE 1: Document Count for Accurate Progress Bar
+    print("🔍 Pre-calculating total job size...")
+    total_docs = 0
+    cat_files = {}
+    for cat in categories:
+        names = [f for f in os.listdir(os.path.join(XML_SOURCE_DIR, cat)) if f.endswith(".xml")]
+        limit = args.generate_sample_data if is_sampling else args.max_input_files
+        count = min(len(names), limit) if limit > 0 else len(names)
+        cat_files[cat] = names
+        total_docs += count
+        if args.max_output_records and total_docs >= args.max_output_records:
+            total_docs = args.max_output_records
+            break
+
+    # PHASE 2: Process with Throttled Feedback
     stats = {"converted": 0, "skipped": 0}
+    total_processed = 0
 
     
 
-    with tqdm(categories, unit="cat", desc="Extracted: 0") as pbar:
-        for cat in pbar:
-            if args.max_output_records and total_written >= args.max_output_records: break
+    with tqdm(total=total_docs, unit="doc", desc="Total Progress") as pbar:
+        for cat in categories:
+            if args.max_output_records and total_processed >= args.max_output_records: break
             
-            cat_src = os.path.join(XML_SOURCE_DIR, cat)
+            names = cat_files.get(cat, [])
+            if not names: continue
+            
+            # Always shuffle for Samples; shuffle for Production only if a limit is applied
+            if is_sampling or args.max_input_files > 0:
+                random.shuffle(names)
+                limit = args.generate_sample_data if is_sampling else args.max_input_files
+                names = names[:limit]
+
             cat_out = os.path.join(out_root, cat) if not is_sampling else out_root
             os.makedirs(cat_out, exist_ok=True)
-            
-            batch_data, batch_idx, cat_count = [], 1, 0
-            
-            # Use os.scandir for instant file access
-            with os.scandir(cat_src) as entries:
-                # If sampling, we need to collect and shuffle, otherwise we stream
-                if is_sampling or args.max_input_files > 0:
-                    files = []
-                    # Optimization: only scan enough to satisfy max_input if provided
-                    # but if sampling we might want more to pick 'randomly'
-                    scan_limit = args.max_input_files * 3 if args.max_input_files else 1000
-                    for entry in entries:
-                        if entry.name.endswith(".xml"):
-                            files.append(entry.name)
-                            if is_sampling and len(files) >= scan_limit: break
-                    
-                    random.shuffle(files)
-                    target_files = files[:args.generate_sample_data] if is_sampling else files[:args.max_input_files]
-                else:
-                    # Pure streaming for production
-                    target_files = entries
+            batch_data, batch_idx = [], 1
 
-                for entry in target_files:
-                    if args.max_output_records and total_written >= args.max_output_records: break
-                    
-                    # Handle both strings (from sampling list) and DirEntry objects (from generator)
-                    f_path = entry.path if hasattr(entry, 'path') else os.path.join(cat_src, entry)
-                    if not f_path.endswith(".xml"): continue
-
-                    item = parse_icecat_xml(f_path, feature_map, price_map)
-                    if item and item.get("image_url"):
-                        if is_sampling:
-                            # Write to single category file for samples
-                            sample_file = os.path.join(out_root, f"{cat}.ndjson")
-                            with open(sample_file, "a", encoding="utf-8") as sf:
-                                sf.write(json.dumps(item, ensure_ascii=False) + "\n")
-                        else:
-                            batch_data.append(item)
-                        
-                        cat_count += 1
-                        total_written += 1
-                        stats["converted"] += 1
-                        
-                        if not is_sampling and len(batch_data) >= BATCH_SIZE:
-                            flush_batch(cat_out, batch_data, batch_idx)
-                            batch_data, batch_idx = [], batch_idx + 1
+            for xml_file in names:
+                if args.max_output_records and total_processed >= args.max_output_records: break
+                
+                item = parse_icecat_xml(os.path.join(XML_SOURCE_DIR, cat, xml_file), feature_map, price_map)
+                
+                # QUALITY GUARD: Only proceed if item has a valid title and image
+                if item and item.get("image_url") and item.get("title"):
+                    if is_sampling:
+                        # Write directly to the category's sample file
+                        with open(os.path.join(out_root, f"{cat}.ndjson"), "a") as sf:
+                            sf.write(json.dumps(item, ensure_ascii=False) + "\n")
                     else:
-                        stats["skipped"] += 1
+                        batch_data.append(item)
                     
-                    # Update progress bar every record so it doesn't look stuck
-                    pbar.set_description(f"Extracted: {stats['converted']}")
+                    total_processed += 1
+                    stats["converted"] += 1
+                    
+                    if not is_sampling and len(batch_data) >= BATCH_SIZE:
+                        flush_batch(cat_out, batch_data, batch_idx)
+                        batch_data, batch_idx = [], batch_idx + 1
+                else:
+                    stats["skipped"] += 1
+                    # We still increment processed count for the bar so it doesn't lag
+                    total_processed += 1
+                
+                # THROTTLED REFRESH: Update every 100 docs to keep CPU focused on parsing
+                if total_processed % 100 == 0:
+                    pbar.n = total_processed
+                    pbar.set_postfix(cat=cat[:10], skip=stats["skipped"])
+                    pbar.refresh()
 
-            if batch_data and not is_sampling:
-                flush_batch(cat_out, batch_data, batch_idx)
+            if batch_data and not is_sampling: flush_batch(cat_out, batch_data, batch_idx)
+            pbar.n = total_processed
+            pbar.refresh()
 
-    print(f"\n✅ SUCCESS: {stats['converted']} products saved.")
+    print(f"\n✅ Done! Total Converted: {stats['converted']} | Skipped (Low Quality): {stats['skipped']}")
 
 if __name__ == "__main__":
     main()
