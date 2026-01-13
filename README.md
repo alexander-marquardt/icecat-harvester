@@ -100,21 +100,23 @@ uv run -m icecat_harvester.xml_to_json --output-subdir "full_dataset_v1"
 
 If you do not specify an `--output-subdir`, a new directory named with the current timestamp (e.g., `20260113-153000`) will be created automatically to prevent accidental data loss.
 
-#### 4b. Processing a Small Sample
+#### 4b. Seeding Sample Data (Standalone Mode)
 
-For development or testing, you can process a subset of your data. The following flags can be combined:
-
-*   `--output-subdir NAME`: Writes the output to a subdirectory inside `data/products/` (e.g., `data/products/NAME`).
-*   `--max-input-files N`: Processes at most `N` XML files from *each* category directory.
-*   `--max-output-records N`: Stops the entire process after `N` total records have been successfully converted.
-
-**Example:** Create a small test set with a maximum of 2000 records, drawing at most 50 files per category:
+Use this command to generate a small, representative dataset (e.g., 10 products per category) into data/sample-data/. This folder is tracked by Git and allows others to see the schema without downloading the full dataset.
 
 ```bash
-uv run -m icecat_harvester.xml_to_json --output-subdir "test_run_small" --max-input-files 50 --max-output-records 2000
+uv run -m icecat_harvester.xml_to_json --generate-sample-data 10
 ```
+Note: This will clear the sample-data folder and recreate it with fresh samples.
 
-This is useful for quickly generating a small, representative sample of your data without affecting your primary dataset.
+### 4c. Reproducibility & Seeds
+The harvester shuffles files to ensure a diverse sample. By default, it uses seed 42. This means that two people running the same command on the same XML source will get the exact same row ordering.
+
+To generate a different (but still stable) variation, use a different seed:
+
+```bash
+uv run -m icecat_harvester.xml_to_json --generate-sample-data 10 --seed 123
+```
 
 ### 5. Check Statistics (Optional)
 See how many products exist in the index for your categories versus how many you have downloaded.

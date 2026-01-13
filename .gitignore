@@ -15,3 +15,6 @@ products/
 *.csv
 *.xml
 *.ndjson
+
+# But do not ignore the sample-data directory inside it
+!data/sample-data/
