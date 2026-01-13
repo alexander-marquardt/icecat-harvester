@@ -20,6 +20,7 @@ icecat-harvester/
 ├── data/                  # All data lives here (ignored by git)
 │   ├── xml_source/        # Raw XML files (The "Truth")
 │   └── products/          # Processed NDJSON files (The "Output")
+│   └── sample-data/       # TRACKED: Versioned samples
 ├── src/
 │   └── icecat_harvester/  # Python Package
 │       ├── download_xml.py
@@ -109,7 +110,7 @@ uv run -m icecat_harvester.xml_to_json --generate-sample-data 10
 ```
 Note: This will clear the sample-data folder and recreate it with fresh samples.
 
-### 4c. Reproducibility & Seeds
+#### 4c. Reproducibility & Seeds
 The harvester shuffles files to ensure a diverse sample. By default, it uses seed 42. This means that two people running the same command on the same XML source will get the exact same row ordering.
 
 To generate a different (but still stable) variation, use a different seed:
@@ -158,7 +159,7 @@ The xml_to_json script produces NDJSON (Newline Delimited JSON) files. Each line
 
 ### Example Record
 
-```
+```json
 {
   "id": "91778569",
   "title": "Lenovo Legion 5 15ARH05H AMD Ryzen™ 7 4800H Laptop...",
