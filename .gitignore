@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 venv/
 .venv/
+.DS_Store
 
 # Secrets
 .env

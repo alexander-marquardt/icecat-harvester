@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 import argparse
 import random
 import re
+from datetime import datetime
 from tqdm import tqdm
 
 # --- CONFIGURATION ---
@@ -14,7 +15,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 XML_SOURCE_DIR = os.path.join(DATA_DIR, "xml_source")
-JSON_OUTPUT_DIR = os.path.join(DATA_DIR, "json_products")
+JSON_OUTPUT_DIR = os.path.join(DATA_DIR, "products")
 FEATURES_CSV = os.path.join(DATA_DIR, "features.csv")
 PRICES_NDJSON = os.path.join(DATA_DIR, "price_baselines.ndjson")
 
@@ -241,50 +242,88 @@ def flush_batch(cat_json_dir, batch_data, batch_index):
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--limit", type=int, default=0)
-    parser.add_argument("--sample", action="store_true")
-    parser.add_argument("--yes", action="store_true")
+    parser = argparse.ArgumentParser(
+        description="Convert Icecat XML product data to NDJSON, with sampling options."
+    )
+    parser.add_argument(
+        "--max-input-files",
+        type=int,
+        default=0,
+        help="Maximum number of XML files to read from each category directory. 0 for no limit.",
+    )
+    parser.add_argument(
+        "--max-output-records",
+        type=int,
+        default=0,
+        help="Maximum number of total records to generate across all categories. 0 for no limit.",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Automatically confirm overwriting the output directory.",
+    )
+    parser.add_argument(
+        "--output-subdir",
+        type=str,
+        default="",
+        help="Subdirectory within 'data/products' to write output files to. Defaults to the root of 'data/products'.",
+    )
     args = parser.parse_args()
 
-    if os.path.exists(JSON_OUTPUT_DIR):
-        if not args.yes:
-            confirm = input(f"⚠️  Overwrite {JSON_OUTPUT_DIR}? [y/N]: ").lower().strip()
-            if confirm != 'y': return
-        shutil.rmtree(JSON_OUTPUT_DIR)
-    os.makedirs(JSON_OUTPUT_DIR, exist_ok=True)
+    json_output_dir = JSON_OUTPUT_DIR
+    if args.output_subdir:
+        json_output_dir = os.path.join(JSON_OUTPUT_DIR, args.output_subdir)
+        if os.path.exists(json_output_dir) and not args.yes:
+            confirm = input(f"⚠️  Overwrite {json_output_dir}? [y/N]: ").lower().strip()
+            if confirm != 'y':
+                return
+            shutil.rmtree(json_output_dir)
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        json_output_dir = os.path.join(JSON_OUTPUT_DIR, timestamp)
+
+    os.makedirs(json_output_dir, exist_ok=True)
 
     feature_map = load_feature_map()
     price_map = load_price_map()
-    
-    if not os.path.exists(XML_SOURCE_DIR): return
+
+    if not os.path.exists(XML_SOURCE_DIR):
+        print(f"ERROR: XML source directory not found at {XML_SOURCE_DIR}")
+        return
 
     categories = [d for d in os.listdir(XML_SOURCE_DIR) if os.path.isdir(os.path.join(XML_SOURCE_DIR, d))]
     stats = {"converted": 0, "skipped": 0, "errors": 0}
+    total_records_written = 0
 
     with tqdm(categories, unit="cat") as pbar_cat:
         for cat in pbar_cat:
+            if args.max_output_records and total_records_written >= args.max_output_records:
+                break
+
             pbar_cat.set_description(f"Processing {cat[:15]}")
             
             cat_dir = os.path.join(XML_SOURCE_DIR, cat)
             xml_files = [f for f in os.listdir(cat_dir) if f.endswith(".xml")]
             
-            if not xml_files: continue
+            if not xml_files:
+                continue
             
-            if args.limit > 0:
-                if args.sample and len(xml_files) > args.limit:
-                    files_to_process = random.sample(xml_files, args.limit)
-                else:
-                    files_to_process = xml_files[:args.limit]
-            else:
-                files_to_process = xml_files
+            # Shuffle for better sampling if a limit is applied
+            random.shuffle(xml_files)
 
-            cat_json_dir = os.path.join(JSON_OUTPUT_DIR, cat)
+            files_to_process = xml_files
+            if args.max_input_files > 0:
+                files_to_process = xml_files[:args.max_input_files]
+
+            cat_json_dir = os.path.join(json_output_dir, cat)
             os.makedirs(cat_json_dir, exist_ok=True)
             batch_data = []
             batch_index = 1
 
             for xml_file in files_to_process:
+                if args.max_output_records and total_records_written >= args.max_output_records:
+                    break
+
                 xml_path = os.path.join(cat_dir, xml_file)
                 try:
                     item = parse_icecat_xml(xml_path, feature_map, price_map)
@@ -292,6 +331,7 @@ def main():
                     if item and item.get("title") and item.get("image_url"):
                         batch_data.append(item)
                         stats["converted"] += 1
+                        total_records_written += 1
                         if len(batch_data) >= BATCH_SIZE:
                             flush_batch(cat_json_dir, batch_data, batch_index)
                             batch_data = []
@@ -303,6 +343,10 @@ def main():
 
             if batch_data:
                 flush_batch(cat_json_dir, batch_data, batch_index)
+            
+            if args.max_output_records and total_records_written >= args.max_output_records:
+                print(f"\nReached max-output-records limit ({args.max_output_records}). Halting.")
+                break
 
     print(f"\n✅ Converted: {stats['converted']}")
     print(f"⏭️  Skipped (No Image/Title): {stats['skipped']}")
