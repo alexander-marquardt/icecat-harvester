@@ -8,7 +8,7 @@ DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 CATEGORIES_CSV = os.path.join(DATA_DIR, "categories.csv")
 OUTPUT_PRICES_CSV = os.path.join(DATA_DIR, "price_baselines.csv")
 
-# Heuristics: (Keyword, Estimated_EUR)
+# Heuristics: (Keyword, Estimated_USD)
 # Order matters: more specific matches should be higher
 RULES = [
     ("Server", 1500),
