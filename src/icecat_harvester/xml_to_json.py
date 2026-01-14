@@ -148,7 +148,7 @@ def parse_icecat_xml(xml_path, feature_map, price_map):
             "description": "\n".join(desc_parts),
             "image_url": None,
             "price": 0.0, 
-            "currency": "EUR",
+            "currency": "USD",
             "categories": [],
             "attrs": attrs,                
             "attr_keys": sorted(list(attrs.keys()))
