@@ -155,7 +155,7 @@ The xml_to_json script produces NDJSON (Newline Delimited JSON) files. Each line
 | `title` | string | Full product name and marketing title. |
 | `brand` | string | Manufacturer name (e.g., Lenovo, HP). |
 | `description` | string | Cleaned text description (HTML tags removed). |
-| `price` | float | Estimated/Heuristic price in EUR. |
+| `price` | float | Estimated/Heuristic price in USD. |
 | `image_url` | string | Primary high-resolution product image URL. |
 | `categories` | list | List of category names assigned to the product. |
 | `attrs` | object | **Flattened Dictionary** of technical specifications. |
@@ -170,7 +170,7 @@ The xml_to_json script produces NDJSON (Newline Delimited JSON) files. Each line
   "brand": "Lenovo",
   "description": "Minimal meets mighty... Thermally tuned via Legion Coldfront 2.0.",
   "price": 865.33,
-  "currency": "EUR",
+  "currency": "USD",
   "image_url": "https://images.icecat.biz/img/gallery_mediums/79117985_5269963235.jpg",
   "categories": ["Laptops"],
   "attrs": {
