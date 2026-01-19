@@ -142,6 +142,18 @@ uv run -m icecat_harvester.combine_json "full_dataset_v1"
 
 This will create a new directory, `data/products_combined/`, containing the combined files (e.g., `Laptops.ndjson`, `Smartphones.ndjson`). You can change the output directory with the `--output-dir` flag.
 
+### 7. Loop over combined files
+
+Below is an example `bash` loop over the "combined" files (your uploader tool will be different from mine)
+
+```bash
+for file in ../icecat-harvester/data/products_combined/*.ndjson; do
+  echo "Processing: $file"
+  ## replace the next line with your uploader tool/command
+  uv run python -m searcharch.cli load-data --format rail_json --file "$file" 
+done
+```
+
 ## Output Format
 
 The xml_to_json script produces NDJSON (Newline Delimited JSON) files. Each line is one JSON object representing a single product.
