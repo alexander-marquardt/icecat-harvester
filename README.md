@@ -142,7 +142,22 @@ uv run -m icecat_harvester.combine_json "full_dataset_v1"
 
 This will create a new directory, `data/products_combined/`, containing the combined files (e.g., `Laptops.ndjson`, `Smartphones.ndjson`). You can change the output directory with the `--output-dir` flag.
 
-### 7. Loop over combined files
+### 7. Curate Demo Catalog
+
+While the full dataset contains thousands of products, you often need a smaller, high-quality subset for a live demo. This script pulls a specific number of products from each category defined in targets.txt.
+
+It uses Keyword Prioritization: if you specify keywords like "iPhone" or "Samsung," the script will prioritize those items for your demo, falling back to random products only if no matches are found. It also normalizes folder names, so it can find data even if your folders use underscores (e.g., Mobile_Phones) while your target list uses spaces.
+
+Example: Create a curated demo catalog This command looks into your specified dataset, takes 10 products per target category, and saves them to a single file.
+
+```bash
+uv run -m icecat_harvester.curate_demo_data \
+  --input-path ./data/products/2026-01-14-full_dataset \
+  --limit 1000 \
+  --keywords "iphone,samsung,nokia,macbook,apple,computer,laptop,phone,tv,ipad" \
+  --output ./data/sample-data/demo_catalog.ndjson
+```
+### 8. Loop over combined files
 
 Below is an example `bash` loop over the "combined" files (your uploader tool will be different from mine)
 
